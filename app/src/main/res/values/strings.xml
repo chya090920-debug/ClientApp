@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">聊天客户端</string>
+    <string name="connection_status">连接状态</string>
+    <string name="public_chat">公共聊天室</string>
+    <string name="join_room">加入聊天室</string>
+    <string name="create_room">创建聊天室</string>
+    <string name="room_id_hint">输入12位数字ID</string>
+    <string name="password_hint">密码（可选）</string>
+    <string name="connecting">连接中...</string>
+</resources>
