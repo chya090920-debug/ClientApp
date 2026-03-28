@@ -59,7 +59,9 @@ public class WebSocketClientService extends Service {
     private static final int RECONNECT_DELAY = 3000;
     private static final int HEARTBEAT_INTERVAL = 25000; // 25秒心跳
     private boolean shouldReconnect = true;
+    private boolean isReconnecting = false; // 标记是否正在主动重连
     private Runnable heartbeatRunnable;
+    private Runnable reconnectRunnable; // 保存重连任务的引用
 
     public enum ConnectionStatus {
         CONNECTING,
@@ -162,14 +164,19 @@ public class WebSocketClientService extends Service {
     }
 
     private void connect() {
+        // 取消之前的重连任务
+        cancelReconnect();
+        
         if (webSocketClient != null) {
             try {
+                isReconnecting = true; // 标记为主动重连，避免触发 onClose 中的重连逻辑
                 webSocketClient.close();
             } catch (Exception e) {
                 Log.e(TAG, "Error closing existing connection", e);
             }
         }
 
+        isReconnecting = false; // 重置标志
         updateStatus(ConnectionStatus.CONNECTING);
 
         try {
@@ -181,6 +188,7 @@ public class WebSocketClientService extends Service {
                 @Override
                 public void onOpen(ServerHandshake handshakedata) {
                     Log.d(TAG, "Connected to server, status: " + handshakedata.getHttpStatus());
+                    isReconnecting = false; // 连接成功，重置标志
                     // 发送认证
                     JsonObject auth = new JsonObject();
                     auth.addProperty("action", "auth");
@@ -197,7 +205,8 @@ public class WebSocketClientService extends Service {
                 public void onClose(int code, String reason, boolean remote) {
                     Log.d(TAG, "Connection closed: " + code + " - " + reason + ", remote: " + remote);
                     updateStatus(ConnectionStatus.DISCONNECTED);
-                    if (shouldReconnect) {
+                    // 只有在非主动重连且应该重连时才触发重连
+                    if (shouldReconnect && !isReconnecting) {
                         scheduleReconnect();
                     }
                 }
@@ -206,7 +215,8 @@ public class WebSocketClientService extends Service {
                 public void onError(Exception ex) {
                     Log.e(TAG, "WebSocket error: " + ex.getMessage(), ex);
                     updateStatus(ConnectionStatus.DISCONNECTED);
-                    if (shouldReconnect) {
+                    // 只有在非主动重连且应该重连时才触发重连
+                    if (shouldReconnect && !isReconnecting) {
                         scheduleReconnect();
                     }
                 }
@@ -250,8 +260,17 @@ public class WebSocketClientService extends Service {
     }
 
     private void scheduleReconnect() {
+        cancelReconnect(); // 先取消之前的重连任务
         updateStatus(ConnectionStatus.RECONNECTING);
-        handler.postDelayed(this::connect, RECONNECT_DELAY);
+        reconnectRunnable = this::connect;
+        handler.postDelayed(reconnectRunnable, RECONNECT_DELAY);
+    }
+    
+    private void cancelReconnect() {
+        if (reconnectRunnable != null) {
+            handler.removeCallbacks(reconnectRunnable);
+            reconnectRunnable = null;
+        }
     }
 
     private void updateStatus(ConnectionStatus status) {
@@ -452,6 +471,8 @@ public class WebSocketClientService extends Service {
     public void onDestroy() {
         super.onDestroy();
         shouldReconnect = false;
+        isReconnecting = true; // 防止 onClose 触发重连
+        cancelReconnect();
         stopHeartbeat();
         if (webSocketClient != null) {
             try {
