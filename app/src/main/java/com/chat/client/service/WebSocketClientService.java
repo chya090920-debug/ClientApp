@@ -57,7 +57,9 @@ public class WebSocketClientService extends Service {
     private RoomListener roomListener;
     
     private static final int RECONNECT_DELAY = 3000;
+    private static final int HEARTBEAT_INTERVAL = 25000; // 25秒心跳
     private boolean shouldReconnect = true;
+    private Runnable heartbeatRunnable;
 
     public enum ConnectionStatus {
         CONNECTING,
@@ -172,10 +174,13 @@ public class WebSocketClientService extends Service {
 
         try {
             URI uri = new URI(SERVER_URL);
-            webSocketClient = new WebSocketClient(uri) {
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Origin", "http://frp-use.com");
+            
+            webSocketClient = new WebSocketClient(uri, headers) {
                 @Override
                 public void onOpen(ServerHandshake handshakedata) {
-                    Log.d(TAG, "Connected to server");
+                    Log.d(TAG, "Connected to server, status: " + handshakedata.getHttpStatus());
                     // 发送认证
                     JsonObject auth = new JsonObject();
                     auth.addProperty("action", "auth");
@@ -190,27 +195,57 @@ public class WebSocketClientService extends Service {
 
                 @Override
                 public void onClose(int code, String reason, boolean remote) {
-                    Log.d(TAG, "Connection closed: " + code + " - " + reason);
+                    Log.d(TAG, "Connection closed: " + code + " - " + reason + ", remote: " + remote);
                     updateStatus(ConnectionStatus.DISCONNECTED);
-                    if (shouldReconnect && remote) {
+                    if (shouldReconnect) {
                         scheduleReconnect();
                     }
                 }
 
                 @Override
                 public void onError(Exception ex) {
-                    Log.e(TAG, "WebSocket error", ex);
+                    Log.e(TAG, "WebSocket error: " + ex.getMessage(), ex);
                     updateStatus(ConnectionStatus.DISCONNECTED);
                     if (shouldReconnect) {
                         scheduleReconnect();
                     }
                 }
             };
+            
+            // 设置连接超时
+            webSocketClient.setConnectionLostTimeout(30);
             webSocketClient.connect();
+            
+            // 启动心跳
+            startHeartbeat();
         } catch (Exception e) {
-            Log.e(TAG, "Failed to connect", e);
+            Log.e(TAG, "Failed to connect: " + e.getMessage(), e);
             updateStatus(ConnectionStatus.DISCONNECTED);
             scheduleReconnect();
+        }
+    }
+    
+    private void startHeartbeat() {
+        stopHeartbeat();
+        heartbeatRunnable = new Runnable() {
+            @Override
+            public void run() {
+                if (webSocketClient != null && webSocketClient.isOpen()) {
+                    JsonObject heartbeat = new JsonObject();
+                    heartbeat.addProperty("action", "heartbeat");
+                    webSocketClient.send(gson.toJson(heartbeat));
+                    Log.d(TAG, "Heartbeat sent");
+                }
+                handler.postDelayed(this, HEARTBEAT_INTERVAL);
+            }
+        };
+        handler.postDelayed(heartbeatRunnable, HEARTBEAT_INTERVAL);
+    }
+    
+    private void stopHeartbeat() {
+        if (heartbeatRunnable != null) {
+            handler.removeCallbacks(heartbeatRunnable);
+            heartbeatRunnable = null;
         }
     }
 
@@ -417,6 +452,7 @@ public class WebSocketClientService extends Service {
     public void onDestroy() {
         super.onDestroy();
         shouldReconnect = false;
+        stopHeartbeat();
         if (webSocketClient != null) {
             try {
                 webSocketClient.close();
